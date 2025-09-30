@@ -22,7 +22,9 @@ from src.utils import collate_fn, save_plots, calculate_count_mae
 def get_transforms(is_train):
     """Retorna as transformações de imagem apropriadas."""
     transforms = []
-    # Converte a imagem para um tensor FloatTensor no intervalo [0, 1]
+    # 1. Converte a imagem PIL para um Tensor do PyTorch
+    transforms.append(T.ToImage())
+    # 2. Converte o tipo de dado para float32 e escala os valores para [0, 1]
     transforms.append(T.ToDtype(torch.float32, scale=True))
     if is_train:
         # Aplica virada horizontal aleatória durante o treino
