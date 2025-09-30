@@ -74,7 +74,7 @@ def main(args):
     )
 
     # --- Criação do Modelo ---
-    num_classes = len(dataset_train.get_classes()) + 1
+    num_classes = len(dataset_train.get_classes()) 
     model = create_model(num_classes=num_classes, image_size=image_size)
     model.to(device)
 
