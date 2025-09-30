@@ -14,6 +14,8 @@ import os
 import matplotlib.pyplot as plt
 from torchvision.transforms import v2 as T
 from torch.optim.lr_scheduler import LinearLR
+# Importações para Treinamento com Precisão Mista (AMP)
+from torch.cuda.amp import GradScaler, autocast
 
 from src.dataset import PestDetectionDataset
 from src.model import create_model
@@ -33,9 +35,8 @@ def main(args):
     # --- Configuração do Dispositivo ---
     if torch.cuda.is_available():
         device = torch.device('cuda')
-    elif torch.backends.mps.is_available():
-        device = torch.device('mps')
     else:
+        # Fallback para CPU se nem CUDA nem MPS estiverem disponíveis
         device = torch.device('cpu')
     print(f"Usando o dispositivo: {device}\n")
 
@@ -74,11 +75,11 @@ def main(args):
     )
 
     # --- Criação do Modelo ---
-    num_classes = len(dataset_train.get_classes()) 
+    num_classes = len(dataset_train.get_classes()) + 1
     model = create_model(num_classes=num_classes, image_size=image_size)
     model.to(device)
 
-    # --- Configuração do Otimizador e do Agendador de LR ---
+    # --- Configuração do Otimizador, Agendador e GradScaler ---
     params_backbone = [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad]
     params_head = [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]
 
@@ -90,9 +91,10 @@ def main(args):
         weight_decay=1e-4
     )
     
-    # **AGENDADOR DE AQUECIMENTO (WARM-UP) ADICIONADO AQUI**
-    # Aumenta a taxa de aprendizado linearmente durante a primeira época
     warmup_scheduler = LinearLR(optimizer, start_factor=0.01, total_iters=len(data_loader_train))
+    
+    # **GRADSCALER ADICIONADO AQUI PARA ESTABILIZAR O TREINAMENTO**
+    scaler = GradScaler()
 
     # --- Loop de Treinamento ---
     train_losses = []
@@ -108,9 +110,11 @@ def main(args):
             images = list(image.to(device) for image in images)
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-            loss_dict = model(images, targets)
-            losses = sum(loss for loss in loss_dict.values())
-            
+            # Usa autocast para executar o forward pass com precisão mista
+            with autocast():
+                loss_dict = model(images, targets)
+                losses = sum(loss for loss in loss_dict.values())
+
             if not torch.isfinite(losses):
                 print(f"\nERRO: Perda infinita ou NaN detetada no passo {i}. Pulando atualização.")
                 print(f"Detalhes da Perda: {loss_dict}")
@@ -118,21 +122,27 @@ def main(args):
                 continue
 
             loss_value = losses.item()
-            losses = losses / args.accumulation_steps
             
-            losses.backward()
-
-            # **RECORTE DE GRADIENTE (GRADIENT CLIPPING) ADICIONADO AQUI**
-            # Impede que os gradientes explodam
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # Usa o scaler para escalar a perda antes do backward pass
+            scaler.scale(losses / args.accumulation_steps).backward()
 
             if (i + 1) % args.accumulation_steps == 0:
-                optimizer.step()
+                # Usa o scaler para desescalar os gradientes antes do clipping
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                # Usa o scaler para executar o passo do otimizador
+                scaler.step(optimizer)
+                # Atualiza a escala para o próximo passo
+                scaler.update()
+                
                 optimizer.zero_grad()
             
-            # Atualiza a taxa de aprendizado a cada passo, apenas na primeira época
             if epoch == 1:
-                warmup_scheduler.step()
+                # A LÓGICA DO SCHEDULER FOI CORRIGIDA PARA ATUALIZAR APENAS APÓS O PASSO DO OTIMIZADOR
+                # A verificação de (i+1) % acc.. garante que isto aconteça
+                if (i + 1) % args.accumulation_steps == 0:
+                    warmup_scheduler.step()
 
             running_loss += loss_value
             progress_bar.set_postfix(loss=f"{loss_value:.4f}")
