@@ -75,7 +75,6 @@ def main(args):
 
     # --- Criação do Modelo ---
     num_classes = len(dataset_train.get_classes()) + 1
-    # Passa o image_size para o modelo
     model = create_model(num_classes=num_classes, image_size=image_size)
     model.to(device)
 
@@ -109,6 +108,15 @@ def main(args):
             loss_dict = model(images, targets)
             losses = sum(loss for loss in loss_dict.values())
             
+            # **VERIFICAÇÃO DE SANIDADE ADICIONADA AQUI**
+            # Verifica se a perda é um número válido antes de continuar
+            if not torch.isfinite(losses):
+                print(f"\nERRO: Perda infinita ou NaN detetada no passo {i}. Pulando atualização.")
+                print(f"Detalhes da Perda: {loss_dict}")
+                # Zera o gradiente e continua para o próximo batch para evitar corromper o modelo
+                optimizer.zero_grad()
+                continue
+
             loss_value = losses.item()
             losses = losses / args.accumulation_steps
             
