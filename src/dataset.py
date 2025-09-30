@@ -43,7 +43,12 @@ class PestDetectionDataset(Dataset):
             ymax = ymin + ann['bbox'][3]
             boxes.append([xmin, ymin, xmax, ymax])
 
-        boxes = torch.as_tensor(boxes, dtype=torch.float32)
+        # Converte para tensor, garantindo a forma correta [N, 4] mesmo se N=0
+        if boxes:
+            boxes = torch.as_tensor(boxes, dtype=torch.float32)
+        else:
+            # Se não houver caixas, crie um tensor com a forma correta [0, 4]
+            boxes = torch.zeros((0, 4), dtype=torch.float32)
 
         # Extrai os labels (IDs das classes)
         labels = torch.as_tensor([ann['category_id'] for ann in coco_anns], dtype=torch.int64)
@@ -68,10 +73,7 @@ class PestDetectionDataset(Dataset):
         target["image_id"] = torch.tensor([img_id])
         
         # Calcula a área das bounding boxes
-        if boxes.shape[0] > 0:
-            target["area"] = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
-        else:
-            target["area"] = torch.empty((0,), dtype=torch.float32)
+        target["area"] = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
 
         # Supõe que não há instâncias "crowd"
         target["iscrowd"] = torch.zeros((len(coco_anns),), dtype=torch.int64)
