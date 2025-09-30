@@ -21,10 +21,7 @@ from src.utils import collate_fn, save_plots, calculate_count_mae
 def get_transforms(is_train, image_size=640):
     """Retorna as transformações de imagem apropriadas."""
     transforms = []
-    # Adiciona um redimensionamento para garantir que todas as imagens/tiles
-    # tenham o mesmo tamanho antes de serem agrupadas em um batch.
     transforms.append(T.Resize((image_size, image_size)))
-    
     transforms.append(T.ToImage())
     transforms.append(T.ToDtype(torch.float32, scale=True))
     if is_train:
@@ -41,6 +38,9 @@ def main(args):
         device = torch.device('cpu')
     print(f"Usando o dispositivo: {device}\n")
 
+    # Define o tamanho da imagem/tile a ser usado
+    image_size = 640
+
     # --- Preparação dos Dados ---
     train_data_path = os.path.join(args.data_path, 'train')
     val_data_path = os.path.join(args.data_path, 'valid')
@@ -50,12 +50,12 @@ def main(args):
     dataset_train = PestDetectionDataset(
         root_dir=train_data_path,
         annotation_file=train_ann_file,
-        transforms=get_transforms(is_train=True)
+        transforms=get_transforms(is_train=True, image_size=image_size)
     )
     dataset_valid = PestDetectionDataset(
         root_dir=val_data_path,
         annotation_file=val_ann_file,
-        transforms=get_transforms(is_train=False)
+        transforms=get_transforms(is_train=False, image_size=image_size)
     )
 
     data_loader_train = DataLoader(
@@ -75,7 +75,8 @@ def main(args):
 
     # --- Criação do Modelo ---
     num_classes = len(dataset_train.get_classes()) + 1
-    model = create_model(num_classes=num_classes)
+    # Passa o image_size para o modelo
+    model = create_model(num_classes=num_classes, image_size=image_size)
     model.to(device)
 
     # --- Configuração do Otimizador ---
@@ -142,9 +143,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Treina um modelo de detecção de pragas.")
     parser.add_argument('--data_path', type=str, required=True, help='Caminho para a pasta principal do dataset.')
     parser.add_argument('--epochs', type=int, default=50, help='Número de épocas de treinamento.')
-    parser.add_argument('--batch_size', type=int, default=4, help='Tamanho do batch de imagens por passo.')
-    parser.add_argument('--num_workers', type=int, default=4, help='Número de workers para carregar os dados.')
-    parser.add_argument('--accumulation_steps', type=int, default=4, help='Passos para acumulação de gradiente (batch_size_efetivo = batch_size * accumulation_steps).')
+    parser.add_argument('--batch_size', type=int, default=2, help='Tamanho do batch de imagens por passo. (Seguro para A100 40GB)')
+    parser.add_argument('--num_workers', type=int, default=8, help='Número de workers para carregar os dados.')
+    parser.add_argument('--accumulation_steps', type=int, default=8, help='Passos para acumulação de gradiente (batch_size_efetivo = 16).')
     
     args = parser.parse_args()
     main(args)

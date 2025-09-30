@@ -15,12 +15,11 @@ class TimmToVisionFPN(nn.Module):
         super().__init__()
         self.backbone = backbone_timm
         
-        # Extrai os canais de saída de cada estágio do backbone
         in_channels_list = [
             self.backbone.feature_info.channels(i) for i in self.backbone.feature_info.out_indices
         ]
         
-        out_channels = 256 # Tamanho da saída de cada nível da FPN
+        out_channels = 256
         
         self.fpn = FeaturePyramidNetwork(
             in_channels_list=in_channels_list,
@@ -35,7 +34,7 @@ class TimmToVisionFPN(nn.Module):
         features_fpn = self.fpn(features_dict)
         return features_fpn
 
-def create_model(num_classes):
+def create_model(num_classes, image_size=640):
     """
     Cria o modelo Mask R-CNN com um backbone ConvNeXt V2 customizado.
     """
@@ -55,9 +54,13 @@ def create_model(num_classes):
         aspect_ratios=aspect_ratios
     )
 
-    # Definimos os parâmetros da transformação interna para valores neutros,
-    # uma vez que o nosso DataLoader já está a tratar da normalização e do redimensionamento.
-    # Isto impede que o modelo tente fazer um segundo redimensionamento que causa o estouro de memória.
+    roi_pooler = MultiScaleRoIAlign(
+        featmap_names=['0', '1', '2', '3'],
+        output_size=7,
+        sampling_ratio=2
+    )
+    
+    # Parâmetros para desativar completamente a transformação interna do modelo
     image_mean = [0.0] * 3
     image_std = [1.0] * 3
 
@@ -65,10 +68,15 @@ def create_model(num_classes):
         backbone_with_fpn,
         num_classes=num_classes,
         rpn_anchor_generator=rpn_anchor_generator,
-        image_mean=image_mean, # Desliga a normalização interna
-        image_std=image_std,   # Desliga a normalização interna
-        rpn_pre_nms_top_n_train=2000, # Parâmetros padrão que funcionam bem
-        rpn_pre_nms_top_n_test=1000,
+        box_roi_pool=roi_pooler,
+        mask_roi_pool=roi_pooler,
+        # **A CORREÇÃO DEFINITIVA ESTÁ AQUI**
+        # Força o modelo a usar o tamanho de imagem que nós definimos,
+        # desativando o seu redimensionamento interno que causa o estouro de memória.
+        min_size=image_size,
+        max_size=image_size,
+        image_mean=image_mean,
+        image_std=image_std,
     )
 
     return model
