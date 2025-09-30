@@ -17,50 +17,38 @@ class PestDetectionDataset(VisionDataset):
         ann_ids = coco.getAnnIds(imgIds=img_id)
         anns = coco.loadAnns(ann_ids)
         
-        # --- FILTRO DE SANIDADE ROBUSTO ---
-        # Garante que as caixas delimitadoras tenham largura e altura positivas.
-        valid_anns = []
-        for ann in anns:
-            x, y, w, h = ann['bbox']
-            if w > 0 and h > 0:
-                valid_anns.append(ann)
-        anns = valid_anns
-        # --- FIM DO FILTRO ---
-
         path = coco.loadImgs(img_id)[0]['file_name']
         img_path = os.path.join(self.root, path)
         img = Image.open(img_path).convert("RGB")
 
-        num_objs = len(anns)
-        
+        # --- FILTRO DE SANIDADE FINAL E DEFINITIVO ---
+        # Listas para guardar apenas as anotações 100% válidas
+        valid_boxes = []
+        valid_labels = []
+        valid_masks = []
+
+        for ann in anns:
+            x, y, w, h = ann['bbox']
+            # 1. Verifica se a caixa tem dimensões válidas
+            if w > 0 and h > 0:
+                # 2. Gera a máscara
+                mask = coco.annToMask(ann)
+                # 3. VERIFICAÇÃO CRUCIAL: Garante que a máscara não está vazia.
+                #    Isto apanha polígonos de segmentação inválidos.
+                if mask.sum() > 0:
+                    valid_boxes.append([x, y, x + w, y + h]) # Converte para [x1, y1, x2, y2]
+                    valid_labels.append(ann['category_id'])
+                    valid_masks.append(mask)
+
+        num_objs = len(valid_boxes)
+
         if num_objs > 0:
-            boxes = [ann['bbox'] for ann in anns]
-            boxes = torch.as_tensor(boxes, dtype=torch.float32)
-            # Converte de [x, y, w, h] para [x1, y1, x2, y2]
-            boxes[:, 2] = boxes[:, 0] + boxes[:, 2]
-            boxes[:, 3] = boxes[:, 1] + boxes[:, 3]
-
-            labels = [ann['category_id'] for ann in anns]
-            labels = torch.as_tensor(labels, dtype=torch.int64)
-
-            masks = [coco.annToMask(ann) for ann in anns]
-            masks = np.array(masks)
+            boxes = torch.as_tensor(valid_boxes, dtype=torch.float32)
+            labels = torch.as_tensor(valid_labels, dtype=torch.int64)
+            masks = np.array(valid_masks)
             masks = torch.as_tensor(masks, dtype=torch.uint8)
-
-            # --- VERIFICAÇÃO FINAL DE COORDENADAS ---
-            # Garante que x2 > x1 e y2 > y1
-            valid_boxes_mask = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
-            boxes = boxes[valid_boxes_mask]
-            labels = labels[valid_boxes_mask]
-            masks = masks[valid_boxes_mask]
-            # --- FIM DA VERIFICAÇÃO ---
-
-            # Se todas as caixas forem inválidas após a verificação, trate como se não houvesse objetos
-            if boxes.shape[0] == 0:
-                num_objs = 0
-
-        if num_objs == 0:
-            # Cria tensores vazios com as formas corretas se não houver objetos
+        else:
+            # Cria tensores vazios com as formas corretas se não houver objetos válidos
             boxes = torch.zeros((0, 4), dtype=torch.float32)
             labels = torch.zeros((0,), dtype=torch.int64)
             masks = torch.zeros((0, img.height, img.width), dtype=torch.uint8)
