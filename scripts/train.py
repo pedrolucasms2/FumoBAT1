@@ -13,6 +13,7 @@ from tqdm import tqdm
 import os
 import matplotlib.pyplot as plt
 from torchvision.transforms import v2 as T
+from torch.optim.lr_scheduler import LinearLR
 
 from src.dataset import PestDetectionDataset
 from src.model import create_model
@@ -38,7 +39,6 @@ def main(args):
         device = torch.device('cpu')
     print(f"Usando o dispositivo: {device}\n")
 
-    # Define o tamanho da imagem/tile a ser usado
     image_size = 640
 
     # --- Preparação dos Dados ---
@@ -78,17 +78,21 @@ def main(args):
     model = create_model(num_classes=num_classes, image_size=image_size)
     model.to(device)
 
-    # --- Configuração do Otimizador ---
+    # --- Configuração do Otimizador e do Agendador de LR ---
     params_backbone = [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad]
     params_head = [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]
 
     optimizer = torch.optim.AdamW(
         [
-            {'params': params_backbone, 'lr': 1e-5},
-            {'params': params_head, 'lr': 1e-4}
+            {'params': params_backbone, 'lr': args.lr_backbone},
+            {'params': params_head, 'lr': args.lr_head}
         ],
         weight_decay=1e-4
     )
+    
+    # **AGENDADOR DE AQUECIMENTO (WARM-UP) ADICIONADO AQUI**
+    # Aumenta a taxa de aprendizado linearmente durante a primeira época
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.01, total_iters=len(data_loader_train))
 
     # --- Loop de Treinamento ---
     train_losses = []
@@ -98,8 +102,7 @@ def main(args):
     for epoch in range(1, args.epochs + 1):
         model.train()
         running_loss = 0.0
-        optimizer.zero_grad()
-
+        
         progress_bar = tqdm(data_loader_train, desc=f"--- Época {epoch}/{args.epochs} ---")
         for i, (images, targets) in enumerate(progress_bar):
             images = list(image.to(device) for image in images)
@@ -108,12 +111,9 @@ def main(args):
             loss_dict = model(images, targets)
             losses = sum(loss for loss in loss_dict.values())
             
-            # **VERIFICAÇÃO DE SANIDADE ADICIONADA AQUI**
-            # Verifica se a perda é um número válido antes de continuar
             if not torch.isfinite(losses):
                 print(f"\nERRO: Perda infinita ou NaN detetada no passo {i}. Pulando atualização.")
                 print(f"Detalhes da Perda: {loss_dict}")
-                # Zera o gradiente e continua para o próximo batch para evitar corromper o modelo
                 optimizer.zero_grad()
                 continue
 
@@ -122,9 +122,17 @@ def main(args):
             
             losses.backward()
 
+            # **RECORTE DE GRADIENTE (GRADIENT CLIPPING) ADICIONADO AQUI**
+            # Impede que os gradientes explodam
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             if (i + 1) % args.accumulation_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad()
+            
+            # Atualiza a taxa de aprendizado a cada passo, apenas na primeira época
+            if epoch == 1:
+                warmup_scheduler.step()
 
             running_loss += loss_value
             progress_bar.set_postfix(loss=f"{loss_value:.4f}")
@@ -151,9 +159,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Treina um modelo de detecção de pragas.")
     parser.add_argument('--data_path', type=str, required=True, help='Caminho para a pasta principal do dataset.')
     parser.add_argument('--epochs', type=int, default=50, help='Número de épocas de treinamento.')
-    parser.add_argument('--batch_size', type=int, default=2, help='Tamanho do batch de imagens por passo. (Seguro para A100 40GB)')
+    parser.add_argument('--batch_size', type=int, default=2, help='Tamanho do batch de imagens por passo.')
     parser.add_argument('--num_workers', type=int, default=8, help='Número de workers para carregar os dados.')
     parser.add_argument('--accumulation_steps', type=int, default=8, help='Passos para acumulação de gradiente (batch_size_efetivo = 16).')
+    parser.add_argument('--lr_head', type=float, default=1e-4, help='Taxa de aprendizado para a cabeça do modelo.')
+    parser.add_argument('--lr_backbone', type=float, default=1e-5, help='Taxa de aprendizado para o backbone.')
     
     args = parser.parse_args()
     main(args)
