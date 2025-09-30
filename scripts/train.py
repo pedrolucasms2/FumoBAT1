@@ -2,7 +2,6 @@ import sys
 import os
 
 # Adiciona a pasta raiz do projeto ao sys.path
-# Isso permite que o script encontre os módulos na pasta src
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -19,15 +18,16 @@ from src.dataset import PestDetectionDataset
 from src.model import create_model
 from src.utils import collate_fn, save_plots, calculate_count_mae
 
-def get_transforms(is_train):
+def get_transforms(is_train, image_size=640):
     """Retorna as transformações de imagem apropriadas."""
     transforms = []
-    # 1. Converte a imagem PIL para um Tensor do PyTorch
+    # Adiciona um redimensionamento para garantir que todas as imagens/tiles
+    # tenham o mesmo tamanho antes de serem agrupadas em um batch.
+    transforms.append(T.Resize((image_size, image_size)))
+    
     transforms.append(T.ToImage())
-    # 2. Converte o tipo de dado para float32 e escala os valores para [0, 1]
     transforms.append(T.ToDtype(torch.float32, scale=True))
     if is_train:
-        # Aplica virada horizontal aleatória durante o treino
         transforms.append(T.RandomHorizontalFlip(p=0.5))
     return T.Compose(transforms)
 
@@ -47,7 +47,6 @@ def main(args):
     train_ann_file = os.path.join(train_data_path, '_annotations.coco.json')
     val_ann_file = os.path.join(val_data_path, '_annotations.coco.json')
 
-    # Cria os datasets com as transformações apropriadas
     dataset_train = PestDetectionDataset(
         root_dir=train_data_path,
         annotation_file=train_ann_file,
@@ -59,7 +58,6 @@ def main(args):
         transforms=get_transforms(is_train=False)
     )
 
-    # Cria os DataLoaders
     data_loader_train = DataLoader(
         dataset_train,
         batch_size=args.batch_size,
@@ -76,14 +74,12 @@ def main(args):
     )
 
     # --- Criação do Modelo ---
-    num_classes = len(dataset_train.get_classes()) + 1  # +1 para o fundo
+    num_classes = len(dataset_train.get_classes()) + 1
     model = create_model(num_classes=num_classes)
     model.to(device)
 
     # --- Configuração do Otimizador ---
-    # Parâmetros para o backbone (com learning rate menor)
     params_backbone = [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad]
-    # Parâmetros para o restante do modelo (cabeça)
     params_head = [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]
 
     optimizer = torch.optim.AdamW(
@@ -100,10 +96,9 @@ def main(args):
     print("Iniciando o treinamento...")
 
     for epoch in range(1, args.epochs + 1):
-        # Treinamento
         model.train()
         running_loss = 0.0
-        optimizer.zero_grad() # Zera o gradiente no início da época
+        optimizer.zero_grad()
 
         progress_bar = tqdm(data_loader_train, desc=f"--- Época {epoch}/{args.epochs} ---")
         for i, (images, targets) in enumerate(progress_bar):
@@ -113,13 +108,11 @@ def main(args):
             loss_dict = model(images, targets)
             losses = sum(loss for loss in loss_dict.values())
             
-            # Normaliza a perda pela acumulação de gradientes
             loss_value = losses.item()
             losses = losses / args.accumulation_steps
             
             losses.backward()
 
-            # Acumulação de Gradiente
             if (i + 1) % args.accumulation_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad()
@@ -130,20 +123,16 @@ def main(args):
         epoch_loss = running_loss / len(data_loader_train)
         train_losses.append(epoch_loss)
 
-        # Validação
         val_mae = calculate_count_mae(model, data_loader_valid, device)
         val_maes.append(val_mae)
 
         print(f"Fim da Época {epoch}: Perda de Treino = {epoch_loss:.4f}, MAE de Validação = {val_mae:.4f}")
 
-        # Salva o modelo
         if not os.path.exists('outputs'):
             os.makedirs('outputs')
         torch.save(model.state_dict(), f'outputs/model_epoch_{epoch}.pth')
 
-    # --- Fim do Treinamento ---
     print("\nTreinamento concluído.")
-    # Salva os gráficos de desempenho
     if not os.path.exists('results'):
         os.makedirs('results')
     save_plots(train_losses, val_maes, 'results/performance_plots.png')
@@ -153,9 +142,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Treina um modelo de detecção de pragas.")
     parser.add_argument('--data_path', type=str, required=True, help='Caminho para a pasta principal do dataset.')
     parser.add_argument('--epochs', type=int, default=50, help='Número de épocas de treinamento.')
-    parser.add_argument('--batch_size', type=int, default=4, help='Tamanho do batch de imagens.')
-    parser.add_argument('--num_workers', type=int, default=8, help='Número de workers para carregar os dados.')
-    parser.add_argument('--accumulation_steps', type=int, default=4, help='Número de passos para acumulação de gradiente.')
+    parser.add_argument('--batch_size', type=int, default=4, help='Tamanho do batch de imagens por passo.')
+    parser.add_argument('--num_workers', type=int, default=4, help='Número de workers para carregar os dados.')
+    parser.add_argument('--accumulation_steps', type=int, default=4, help='Passos para acumulação de gradiente (batch_size_efetivo = batch_size * accumulation_steps).')
     
     args = parser.parse_args()
     main(args)
