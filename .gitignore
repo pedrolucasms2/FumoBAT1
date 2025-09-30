@@ -1,0 +1,16 @@
+# Ambientes Virtuais e Caches
+__pycache__/
+*.pyc
+venv/
+env/
+convnext/
+
+# Dados, Modelos Salvos e Resultados
+data/
+outputs/
+inference_results/
+
+# Arquivos de IDE
+.vscode/
+.idea/
+.DS_Store
